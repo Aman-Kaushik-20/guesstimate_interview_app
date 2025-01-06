@@ -8,12 +8,23 @@ from typing import List, Dict
 import random
 import time
 import os
+from fpdf import FPDF
+from streamlit_gsheets import GSheetsConnection
+import pandas as pd
+
+
+#url="https://docs.google.com/spreadsheets/d/1kWUzF7UqwA2_1ZFxAxM3Omd8tBnIP7L_1qvF7Dg1ZHw"
+
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+existing_data = conn.read(worksheet="data",usecols=list(range(10)))
+existing_data=existing_data.dropna(how='all')
 
 
 
-#######################################################################################
 ## Chatbot Class
 class GuesstimateChatbot:
+    
     def __init__(self, api_key: str):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.interview_data = self.load_interview_data("interview_with_context.json")
@@ -25,10 +36,28 @@ class GuesstimateChatbot:
             "Mathematical Accuracy",
             "Context Awareness"
         ]
-        
+        ## Changes---------------------------------------
+        # Cost tracking
+        self.token_stats = {
+            'input_tokens': 0,
+            'output_tokens': 0,
+            'input_cost': 0,
+            'output_cost': 0,
+            'total_cost': 0
+        }
+        self.cost_rates = {
+            'input': 0.000003,      # $3/MTok
+            'output': 0.000015,     # $15/MTok
+            'cache_write': 0.00000375,  # $3.75/MTok (if you need this)
+            'cache_read': 0.0000003    # $0.30/MTok (if you need this)
+        }
+        self.max_cost_limit = 0.25  # $0.50 limit
+
+        ## Changes --------------------------------------
         # Initialize system prompt
         self.system_prompt = self.create_system_prompt()
-        
+
+   
     def load_interview_data(self, file_path: str) -> Dict:
         """Load and parse interview data from JSON file"""
         with open(file_path, 'r') as f:
@@ -44,7 +73,7 @@ class GuesstimateChatbot:
     #         return input_data
     #     else:
     #         raise ValueError("Invalid input: expected a JSON string or a dictionary.")
-    
+     
     def create_system_prompt(self) -> str:
         """Create system prompt for guesstimate interviews"""
         prompt = """You are an expert interviewer specializing in guesstimate questions. Your role is to:
@@ -90,10 +119,97 @@ Example interview patterns from real interviews -:
         """Start a new interview with a problem statement"""
         self.conversation_history = []
         self.current_problem = self.select_problem()
-        return f"Your problem statement is to {self.current_problem}. Please feel free to ask any clarifying questions before you begin."
+        return f"Your problem statement is to calculate {self.current_problem}. Please provide your approach to estimate this value."
     
+    ## Changed Functions--------------------------
+
+    def update_token_stats(self, response) -> None:
+        input_tokens = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
+        
+        self.token_stats['input_tokens'] += input_tokens
+        self.token_stats['output_tokens'] += output_tokens
+        
+        # Calculate with correct per-token rates
+        input_cost = input_tokens * 0.000003  # $3 per million tokens
+        output_cost = output_tokens * 0.000015  # $15 per million tokens
+        
+        self.token_stats['input_cost'] += input_cost
+        self.token_stats['output_cost'] += output_cost
+        self.token_stats['total_cost'] = self.token_stats['input_cost'] + self.token_stats['output_cost']
+
+
+
+    def would_exceed_cost_limit(self, estimated_input_tokens: int) -> bool:
+        """Check if adding more tokens would exceed the cost limit"""
+        # Estimate costs including cache costs
+        estimated_cost = (
+            (estimated_input_tokens * self.cost_rates["input"]) +
+            (estimated_input_tokens * self.cost_rates["cache_write"]) +
+            (estimated_input_tokens * 1.5 * self.cost_rates["output"])  # Assume output is 1.5x input
+        )
+        
+        return (self.token_stats['total_cost'] + estimated_cost) > self.max_cost_limit
+    
+    ## Changed Functions up--------------------------
+
+
+    ## Old  Functions down--------------------------
+
+    # def conduct_interview(self, candidate_response: str) -> str:
+    #     """Conduct one turn of the guesstimate interview"""
+        
+    #     # Add candidate's response to history
+    #     self.conversation_history.append({
+    #         "role": "user",
+    #         "content": candidate_response
+    #     })
+        
+    #     # Create messages for API call - update format
+    #     messages = []
+        
+    #     # Add current problem context if exists
+    #     if self.current_problem:
+    #         messages.append({
+    #             "role": "assistant",
+    #             "content": f"Current estimation problem: {self.current_problem}"
+    #         })
+        
+    #     # Add conversation history
+    #     messages.extend([
+    #         {"role": "user" if msg["role"] == "user" else "assistant", "content": msg["content"]}
+    #         for msg in self.conversation_history
+    #     ])
+        
+    #     # Get response from Claude - note the updated API format
+    #     response = self.client.messages.create(
+    #         model="claude-3-5-sonnet-20241022",
+    #         messages=messages,
+    #         system=self.system_prompt,  # system is now a separate parameter
+    #         max_tokens=1024,
+    #         temperature=0.7
+    #     )
+        
+    #     # Add Claude's response to history
+    #     self.conversation_history.append({
+    #         "role": "assistant",
+    #         "content": response.content[0].text
+    #     })
+        
+    #     return response.content[0].text
+
+
+    ## Old  Functions up--------------------------
+
+
     def conduct_interview(self, candidate_response: str) -> str:
-        """Conduct one turn of the guesstimate interview"""
+        """Conduct one turn of the guesstimate interview with token tracking"""
+        # Estimate input tokens (rough estimate: 4 chars = 1 token)
+        estimated_input_tokens = len(candidate_response) // 4
+        
+        # Check if this would exceed our cost limit
+        if self.would_exceed_cost_limit(estimated_input_tokens):
+            return "COST_LIMIT_EXCEEDED"
         
         # Add candidate's response to history
         self.conversation_history.append({
@@ -101,30 +217,30 @@ Example interview patterns from real interviews -:
             "content": candidate_response
         })
         
-        # Create messages for API call - update format
+        # Create messages for API call
         messages = []
-        
-        # Add current problem context if exists
         if self.current_problem:
             messages.append({
                 "role": "assistant",
                 "content": f"Current estimation problem: {self.current_problem}"
             })
         
-        # Add conversation history
         messages.extend([
             {"role": "user" if msg["role"] == "user" else "assistant", "content": msg["content"]}
             for msg in self.conversation_history
         ])
         
-        # Get response from Claude - note the updated API format
+        # Get response from Claude
         response = self.client.messages.create(
             model="claude-3-5-sonnet-20241022",
             messages=messages,
-            system=self.system_prompt,  # system is now a separate parameter
+            system=self.system_prompt,
             max_tokens=1024,
             temperature=0.7
         )
+        
+        # Update token statistics
+        self.update_token_stats(response)
         
         # Add Claude's response to history
         self.conversation_history.append({
@@ -133,6 +249,9 @@ Example interview patterns from real interviews -:
         })
         
         return response.content[0].text
+
+
+
     
     def evaluate_candidate(self) -> Dict:
         """Evaluate the candidate's guesstimate approach"""
@@ -197,7 +316,7 @@ def response_generator(response):
 
 def save_interview(conversation_history: list, evaluation: dict):
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    folder_path = "all_interviews_scripts"
+    folder_path = "interview_scripts"
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
         
@@ -214,6 +333,58 @@ def save_interview(conversation_history: list, evaluation: dict):
         file.write(json.dumps(evaluation, indent=2))
     
     return file_path
+
+
+
+def download_interview_transcript(conversation_history: list, evaluation: dict) -> str:
+    """
+    Generate a downloadable transcript of the conversation history as a PDF file.
+    """
+    # Create PDF instance
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    
+    # Title
+    pdf.set_font("Arial", style="B", size=16)
+    pdf.cell(200, 10, txt="Guesstimate Interview Transcript", ln=True, align='C')
+    pdf.ln(10)
+    
+    # Date and Time
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    pdf.set_font("Arial", size=12)
+    pdf.cell(0, 10, txt=f"Date and Time: {timestamp}", ln=True)
+    pdf.ln(10)
+    
+    # Conversation History
+    pdf.set_font("Arial", style="B", size=12)
+    pdf.cell(0, 10, txt="Conversation History:", ln=True)
+    pdf.ln(5)
+    pdf.set_font("Arial", size=12)
+    for msg in conversation_history:
+        role = "Interviewer" if msg["role"] == "assistant" else "Candidate"
+        # Handle unsupported characters
+        content = msg['content'].encode('latin1', 'replace').decode('latin1')
+        pdf.multi_cell(0, 10, txt=f"{role}: {content}")
+        pdf.ln(2)
+
+    # Evaluation Section
+    pdf.ln(10)
+    pdf.set_font("Arial", style="B", size=12)
+    pdf.cell(0, 10, txt="Evaluation Results:", ln=True)
+    pdf.ln(5)
+    pdf.set_font("Arial", size=12)
+    # Handle unsupported characters in evaluation
+    evaluation_text = json.dumps(evaluation, indent=2).encode('latin1', 'replace').decode('latin1')
+    pdf.multi_cell(0, 10, txt=evaluation_text)
+    
+    # Save the PDF
+    file_name = f"interview_transcript_{timestamp.replace(':', '-').replace(' ', '_')}.pdf"
+    pdf.output(file_name)
+    return file_name
+    
+    
 
 def create_score_bar_graph(scores):
     fig = go.Figure(data=[
@@ -243,10 +414,241 @@ def create_score_bar_graph(scores):
     
     return fig
 
-def main():
-    st.set_page_config(page_title="Guesstimate Interview Bot", layout="wide")
+## OLD MAIN FUNCTION-
+
+# def main():
+      
+        
     
+#     st.title("🤖 Guesstimate Interview Assistant")
+
+#     i=0
+    
+#     # Initialize session state
+#     if 'messages' not in st.session_state:
+#         st.session_state.messages = []
+#     if 'interview_started' not in st.session_state:
+#         st.session_state.interview_started = False
+#     if 'evaluation_done' not in st.session_state:
+#         st.session_state.evaluation_done = False
+#     if 'chatbot' not in st.session_state:
+#         st.session_state.chatbot = None
+#     st.page_link("pages/How To Use.py",label="How To Use EstiMate",icon="🤖")    
+#     # Sidebar for API key and controls
+#     with st.sidebar:
+#         st.header("Configuration")
+#         api_key = st.text_input("Enter Anthropic API Key:", type="password")
+#         #interview_data_path = st.text_input("Interview Data Path:", value="interview_with_context.json")
+#         interview_data_path="interview_with_context.json"
+        
+#         if st.button("Start New Interview", disabled=not api_key):
+#             #st.session_state.chatbot = GuesstimateChatbot(api_key, interview_data_path)
+#             st.session_state.chatbot = GuesstimateChatbot(api_key)
+#             st.session_state.messages = []
+#             st.session_state.interview_started = True
+#             st.session_state.evaluation_done = False
+            
+#             # Start interview and get initial problem
+#             initial_message = st.session_state.chatbot.start_interview()
+#             st.session_state.messages.append({"role": "assistant", "content": initial_message})
+            
+#         if st.button("End Interview & Evaluate", disabled=not st.session_state.interview_started or st.session_state.evaluation_done):
+#             evaluation = st.session_state.chatbot.evaluate_candidate()
+#             st.session_state.evaluation = evaluation
+#             st.session_state.evaluation_done = True
+#             file_path = save_interview(st.session_state.messages, evaluation)
+#             st.success(f"Interview saved to: {file_path}")
+
+        
+    
+#     # Main chat interface
+#     if st.session_state.interview_started:
+#         # Display chat messages
+#         for message in st.session_state.messages:
+#             role = "🤖 Interviewer" if message["role"] == "assistant" else "👤 Candidate"
+#             with st.chat_message(message["role"]):
+#                 st.write(f"{message['content']}")
+        
+#         # Chat input
+#         if not st.session_state.evaluation_done:
+#             user_input = st.chat_input("Your response...")
+#             if user_input:
+#                 # Add user message
+#                 st.session_state.messages.append({"role": "user", "content": user_input})
+#                 with st.chat_message("user"):
+#                     st.write(f"{user_input}")
+#                 # Get interviewer response
+#                 with st.spinner("Interviewer is thinking..."):
+#                     response = st.session_state.chatbot.conduct_interview(user_input)
+#                     #response=f"ECHO ECHO : {user_input}"
+#                     st.session_state.messages.append({"role": "assistant", "content": response})
+#                     with st.chat_message("assistant"):
+#                         st.write_stream(response_generator(response))
+
+#                 st.rerun()
+        
+#         # Display evaluation
+#         if st.session_state.evaluation_done:
+#             st.header("Interview Evaluation")
+
+
+#             try:
+                
+
+#                 if st.session_state.evaluation_done and "form_submitted" not in st.session_state:
+#                     st.subheader("Please Fill Out the Feedback Form Before Viewing Your Results")
+
+#                     with st.form(key="feedback_form"):
+#                         first_name = st.text_input(label="First Name*")
+#                         last_name = st.text_input(label="Last Name")
+#                         college_name = st.text_input(label="Name of College*")
+#                         year_of_passing = st.text_input(label="Year of Passing*")
+#                         knowledge_level = st.selectbox("What is your current level of knowledge?*", ["Beginner", "Intermediate", "Advanced"],index=None)
+#                         session_feedback = st.text_area(label="How did you feel about the session?*")
+#                         expected_score = st.slider("What score out of 10 do you expect in this interview?*", 0, 10, 5)
+#                         overall_experience = st.text_area(label="How was your experience in the interview?*")
+#                         reuse=st.selectbox("Will you use future versions of this app?*", ["Yes", "No"],index=None)
+
+#                         st.markdown("*Fields marked with * are required.*")
+        
+#                         submitted = st.form_submit_button(label="Submit Feedback")
+
+#                 if submitted:
+#                     if not first_name or not college_name or not year_of_passing or not knowledge_level or not session_feedback or not expected_score or not overall_experience or not reuse:
+#                         st.warning("Please fill out all required fields.")
+#                         st.stop()
+#             # Save user responses
+#                     else:
+#                         i=i+1
+
+#                         feedback_data = pd.DataFrame(
+
+#                             [                           
+                            
+#                                 {
+#                                 "Submission Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+#                                 "first_name": first_name,
+#                                 "last_name": last_name,
+#                                 "college_name": college_name,
+#                                 "year_of_passing": year_of_passing,
+#                                 "knowledge_level": knowledge_level,
+#                                 "session_feedback": session_feedback,
+#                                 "expected_score": expected_score,
+#                                 "overall_experience": overall_experience,
+#                                 "reuse": reuse,
+#                             }],
+                            
+#                             index=[i]
+#                             )
+
+#                         updated_df=pd.concat([existing_data,feedback_data],ignore_index=True)
+                        
+#                         conn.update(worksheet="data",data=updated_df)
+
+#                         st.success("Thank you for your feedback! Your responses have been recorded. You can now download your interview transcript and view your results.")
+#                         feedback_data_json = {
+#                             "Submission Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+#                             "first_name": "John",
+#                             "last_name": "Doe",
+#                             "college_name": "Example University",
+#                             "year_of_passing": 2023,
+#                             "knowledge_level": "Intermediate",
+#                             "session_feedback": "The session was very insightful and engaging.",
+#                             "expected_score": 85,
+#                             "overall_experience": "Excellent",
+#                             "reuse": True } 
+                    
+
+#             # Save feedback data as a JSON file
+#                     feedback_file_path = os.path.join("feedback_data_json", f"feedback_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}.json")
+#                     os.makedirs("feedback_data_json", exist_ok=True)
+#                     with open(feedback_file_path, "w") as feedback_file:
+#                         json.dump(feedback_data_json, feedback_file,indent=4)
+            
+                    
+#                     st.session_state.form_submitted = True
+
+#                 if st.session_state.evaluation_done and st.session_state.get("form_submitted"):
+#                     st.header("Interview Evaluation Results") 
+#                     eval_data = st.session_state.get("evaluation", {})   
+                
+#                 # Ensure eval_data is a dictionary
+#                     if not isinstance(eval_data, dict):
+#                         raise ValueError("Evaluation data is not in the expected format.")
+
+#                 # Convert scores to a 10-point scale (assuming original scores were out of 5)
+#                     scores = {
+#                         "Structure": eval_data.get("structure", 0) * 2,
+#                         "Assumptions": eval_data.get("assumptions", 0) * 2,
+#                         "Segmentation": eval_data.get("segmentation", 0) * 2,
+#                         "Math": eval_data.get("math", 0) * 2,
+#                         "Context": eval_data.get("context", 0) * 2,
+#                     }
+
+#                 # Display bar graph
+#                     st.plotly_chart(create_score_bar_graph(scores), use_container_width=True)
+
+#                 # Display detailed feedback
+#                     st.subheader("Detailed Feedback")
+#                     st.write("**Missed Filters:**")
+#                     st.write(eval_data.get("filters_missed", "No data available"))
+#                     st.write("**Key Strengths:**")
+#                     st.write(eval_data.get("key_strengths", "No data available"))
+#                     st.write("**Areas for improvement**")
+#                     st.write(eval_data.get("areas_for_improvement", "No data available"))
+#                 else:
+#                     st.write("Please submit the feedback form first to view your results.")    
+                
+
+#             except KeyError as e:
+#                 st.error(f"Missing key in evaluation data: {e}")
+#             except ValueError as e:
+#                 st.error(f"Invalid evaluation data: {e}")
+#             except Exception as e:
+#                 st.error(f"An unexpected error occurred: {e}")
+
+#         if st.session_state.evaluation_done:
+#             file_name = download_interview_transcript(st.session_state.messages,st.session_state.evaluation)
+            
+#             with open(file_name, "rb") as pdf_file:
+#                 pdf_data = pdf_file.read()
+
+#             st.download_button(
+#                 label="Download Your Interview Transcript",
+#                 data=pdf_data,
+#                 file_name=file_name,
+#                 mime="application/pdf"
+#             )        
+
+#             # eval_data = st.session_state.evaluation
+            
+#             # # Convert scores to 10-point scale (assuming original scores were out of 5)
+#             # scores = {
+#             #     "Structure": eval_data.get("structure", 0) * 2,
+#             #     "Assumptions": eval_data.get("assumptions", 0) * 2,
+#             #     "Segmentation": eval_data.get("segmentation", 0) * 2,
+#             #     "Math": eval_data.get("math", 0) * 2,
+#             #     "Context": eval_data.get("context", 0) * 2
+#             # }
+            
+#             # # Display bar graph
+#             # st.plotly_chart(create_score_bar_graph(scores), use_container_width=True)
+            
+#             # # Display detailed feedback
+#             # st.subheader("Detailed Feedback")
+#             # st.write("**Missed Filters:**")
+#             # st.write(eval_data.get("filters_missed", ""))
+#             # st.write("**Key Strengths:**")
+#             # st.write(eval_data.get("key_strengths", ""))
+#             # st.write("**Areas for improvement**")
+#             # st.write(eval_data.get("areas_for_improvement", ""))
+
+
+## NEW MAIN FUNCTION--
+def main():
     st.title("🤖 Guesstimate Interview Assistant")
+
+    i = 0
     
     # Initialize session state
     if 'messages' not in st.session_state:
@@ -257,22 +659,42 @@ def main():
         st.session_state.evaluation_done = False
     if 'chatbot' not in st.session_state:
         st.session_state.chatbot = None
-        
-    # Sidebar for API key and controls
+    
+    st.page_link("pages/How To Use.py", label="How To Use EstiMate", icon="🤖")
+    
+    # Sidebar for API key, controls, and token tracking
     with st.sidebar:
         st.header("Configuration")
-        api_key = st.text_input("Enter Anthropic API Key:", type="password")
-        #interview_data_path = st.text_input("Interview Data Path:", value="interview_with_context.json")
-        interview_data_path="interview_with_context.json"
+        api_key = st.secrets["ANTHROPIC"]["ANTHROPIC_API_KEY"]
+        ##api_key = st.text_input("Enter Anthropic API Key:", type="password")
+        interview_data_path = "interview_with_context.json"
+        
+        # Display token usage stats if interview is started
+        if st.session_state.chatbot:
+            #st.header("Token Usage Stats")
+            stats = st.session_state.chatbot.token_stats
+            # col1, col2 = st.columns(2)
+            
+            # with col1:
+            #     st.metric("Input Tokens", f"{stats['input_tokens']:,}")
+            #     st.metric("Output Tokens", f"{stats['output_tokens']:,}")
+            
+            # with col2:
+            #     st.metric("Input Cost", f"${stats['input_cost']:.4f}")
+            #     st.metric("Output Cost", f"${stats['output_cost']:.4f}")
+            
+            # st.metric("Total Cost", f"${stats['total_cost']:.4f}")
+            
+            # Show warning if approaching cost limit
+            if stats['total_cost'] > (st.session_state.chatbot.max_cost_limit * 0.8):
+                st.warning("⚠️ Approaching cost limit!")
         
         if st.button("Start New Interview", disabled=not api_key):
-            #st.session_state.chatbot = GuesstimateChatbot(api_key, interview_data_path)
             st.session_state.chatbot = GuesstimateChatbot(api_key)
             st.session_state.messages = []
             st.session_state.interview_started = True
             st.session_state.evaluation_done = False
             
-            # Start interview and get initial problem
             initial_message = st.session_state.chatbot.start_interview()
             st.session_state.messages.append({"role": "assistant", "content": initial_message})
             
@@ -299,46 +721,125 @@ def main():
                 st.session_state.messages.append({"role": "user", "content": user_input})
                 with st.chat_message("user"):
                     st.write(f"{user_input}")
+                
                 # Get interviewer response
                 with st.spinner("Interviewer is thinking..."):
                     response = st.session_state.chatbot.conduct_interview(user_input)
-                    #response=f"ECHO ECHO : {user_input}"
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-                    with st.chat_message("assistant"):
-                        st.write_stream(response_generator(response))
+                    
+                    # Check if cost limit exceeded
+                    if response == "COST_LIMIT_EXCEEDED":
+                        st.error("⚠️ Cost limit exceeded! Ending interview automatically.")
+                        st.session_state.evaluation_done = True
+                        evaluation = st.session_state.chatbot.evaluate_candidate()
+                        st.session_state.evaluation = evaluation
+                        file_path = save_interview(st.session_state.messages, evaluation)
+                        st.success(f"Interview saved to: {file_path}")
+                    else:
+                        st.session_state.messages.append({"role": "assistant", "content": response})
+                        with st.chat_message("assistant"):
+                            st.write_stream(response_generator(response))
 
                 st.rerun()
         
         # Display evaluation
         if st.session_state.evaluation_done:
             st.header("Interview Evaluation")
+            
             try:
-                eval_data = st.session_state.get("evaluation", {})
-                
-                # Ensure eval_data is a dictionary
-                if not isinstance(eval_data, dict):
-                    raise ValueError("Evaluation data is not in the expected format.")
+                if st.session_state.evaluation_done and "form_submitted" not in st.session_state:
+                    st.subheader("Please Fill Out the Feedback Form Before Viewing Your Results")
+                    
+                    with st.form(key="feedback_form"):
+                        first_name = st.text_input(label="First Name*")
+                        last_name = st.text_input(label="Last Name")
+                        college_name = st.text_input(label="Name of College*")
+                        year_of_passing = st.text_input(label="Year of Passing*")
+                        knowledge_level = st.selectbox("What is your current level of knowledge?*", 
+                                                     ["Beginner", "Intermediate", "Advanced"], 
+                                                     index=None)
+                        session_feedback = st.text_area(label="How did you feel about the session?*")
+                        expected_score = st.slider("What score out of 10 do you expect in this interview?*", 
+                                                 0, 10, 5)
+                        overall_experience = st.text_area(label="How was your experience in the interview?*")
+                        reuse = st.selectbox("Will you use future versions of this app?*", 
+                                           ["Yes", "No"], 
+                                           index=None)
 
-                # Convert scores to a 10-point scale (assuming original scores were out of 5)
-                scores = {
-                    "Structure": eval_data.get("structure", 0) * 2,
-                    "Assumptions": eval_data.get("assumptions", 0) * 2,
-                    "Segmentation": eval_data.get("segmentation", 0) * 2,
-                    "Math": eval_data.get("math", 0) * 2,
-                    "Context": eval_data.get("context", 0) * 2,
-                }
+                        st.markdown("*Fields marked with * are required.*")
+                        submitted = st.form_submit_button(label="Submit Feedback")
 
-                # Display bar graph
-                st.plotly_chart(create_score_bar_graph(scores), use_container_width=True)
+                if submitted:
+                    if not first_name or not college_name or not year_of_passing or not knowledge_level or \
+                       not session_feedback or not expected_score or not overall_experience or not reuse:
+                        st.warning("Please fill out all required fields.")
+                        st.stop()
+                    else:
+                        i = i + 1
+                        feedback_data = pd.DataFrame([{
+                            "Submission Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            "first_name": first_name,
+                            "last_name": last_name,
+                            "college_name": college_name,
+                            "year_of_passing": year_of_passing,
+                            "knowledge_level": knowledge_level,
+                            "session_feedback": session_feedback,
+                            "expected_score": expected_score,
+                            "overall_experience": overall_experience,
+                            "reuse": reuse,
+                        }], index=[i])
 
-                # Display detailed feedback
-                st.subheader("Detailed Feedback")
-                st.write("**Missed Filters:**")
-                st.write(eval_data.get("filters_missed", "No data available"))
-                st.write("**Key Strengths:**")
-                st.write(eval_data.get("key_strengths", "No data available"))
-                st.write("**Areas for improvement**")
-                st.write(eval_data.get("areas_for_improvement", "No data available"))
+                        updated_df = pd.concat([existing_data, feedback_data], ignore_index=True)
+                        conn.update(worksheet="data", data=updated_df)
+
+                        st.success("Thank you for your feedback! Your responses have been recorded. You can now download your interview transcript and view your results.")
+                        
+                        feedback_data_json = {
+                            "Submission Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            "first_name": first_name,
+                            "last_name": last_name,
+                            "college_name": college_name,
+                            "year_of_passing": year_of_passing,
+                            "knowledge_level": knowledge_level,
+                            "session_feedback": session_feedback,
+                            "expected_score": expected_score,
+                            "overall_experience": overall_experience,
+                            "reuse": reuse
+                        }
+
+                        feedback_file_path = os.path.join("feedback_data_json", 
+                                                        f"feedback_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}.json")
+                        os.makedirs("feedback_data_json", exist_ok=True)
+                        with open(feedback_file_path, "w") as feedback_file:
+                            json.dump(feedback_data_json, feedback_file, indent=4)
+                        
+                        st.session_state.form_submitted = True
+
+                if st.session_state.evaluation_done and st.session_state.get("form_submitted"):
+                    st.header("Interview Evaluation Results")
+                    eval_data = st.session_state.get("evaluation", {})
+
+                    if not isinstance(eval_data, dict):
+                        raise ValueError("Evaluation data is not in the expected format.")
+
+                    scores = {
+                        "Structure": eval_data.get("structure", 0) * 2,
+                        "Assumptions": eval_data.get("assumptions", 0) * 2,
+                        "Segmentation": eval_data.get("segmentation", 0) * 2,
+                        "Math": eval_data.get("math", 0) * 2,
+                        "Context": eval_data.get("context", 0) * 2,
+                    }
+
+                    st.plotly_chart(create_score_bar_graph(scores), use_container_width=True)
+
+                    st.subheader("Detailed Feedback")
+                    st.write("**Missed Filters:**")
+                    st.write(eval_data.get("filters_missed", "No data available"))
+                    st.write("**Key Strengths:**")
+                    st.write(eval_data.get("key_strengths", "No data available"))
+                    st.write("**Areas for improvement**")
+                    st.write(eval_data.get("areas_for_improvement", "No data available"))
+                else:
+                    st.write("Please submit the feedback form first to view your results.")
 
             except KeyError as e:
                 st.error(f"Missing key in evaluation data: {e}")
@@ -347,28 +848,19 @@ def main():
             except Exception as e:
                 st.error(f"An unexpected error occurred: {e}")
 
-            # eval_data = st.session_state.evaluation
+        if st.session_state.evaluation_done:
+            file_name = download_interview_transcript(st.session_state.messages, st.session_state.evaluation)
             
-            # # Convert scores to 10-point scale (assuming original scores were out of 5)
-            # scores = {
-            #     "Structure": eval_data.get("structure", 0) * 2,
-            #     "Assumptions": eval_data.get("assumptions", 0) * 2,
-            #     "Segmentation": eval_data.get("segmentation", 0) * 2,
-            #     "Math": eval_data.get("math", 0) * 2,
-            #     "Context": eval_data.get("context", 0) * 2
-            # }
-            
-            # # Display bar graph
-            # st.plotly_chart(create_score_bar_graph(scores), use_container_width=True)
-            
-            # # Display detailed feedback
-            # st.subheader("Detailed Feedback")
-            # st.write("**Missed Filters:**")
-            # st.write(eval_data.get("filters_missed", ""))
-            # st.write("**Key Strengths:**")
-            # st.write(eval_data.get("key_strengths", ""))
-            # st.write("**Areas for improvement**")
-            # st.write(eval_data.get("areas_for_improvement", ""))
+            with open(file_name, "rb") as pdf_file:
+                pdf_data = pdf_file.read()
+
+            st.download_button(
+                label="Download Your Interview Transcript",
+                data=pdf_data,
+                file_name=file_name,
+                mime="application/pdf"
+            )
+
 
 if __name__ == "__main__":
     main()
