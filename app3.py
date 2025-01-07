@@ -659,6 +659,8 @@ def main():
         st.session_state.evaluation_done = False
     if 'chatbot' not in st.session_state:
         st.session_state.chatbot = None
+    if 'form_submitted' not in st.session_state:
+        st.session_state.form_submitted = False
     
     st.page_link("pages/How To Use.py", label="How To Use EstiMate", icon="🤖")
     
