@@ -264,7 +264,7 @@ Example interview patterns from real interviews -:
             6. 'filters_missed': (they missed and needed to added in string)
             6. 'key_strengths': (Good poitns in the approach in string) 
             7. 'areas_for_improvement': (Areas in approach to improve in string)
-            Keep names of 'Key'  like 'structure', 'assumptions', etc..  in JSON as above only. Format as valid JSON string only. FORMAT AS VALID JSON ONLY. I am Saying this again: RETURN AS JSON FORMAT STRING. """
+            Return these in JSON format, Keep names of keys like 'structure', 'assumptions', 'segmentation', 'math','context'etc..  in JSON as above names  only. Format as valid JSON string only with above names of key only... FORMAT AS VALID JSON ONLY. I am Saying this again: RETURN AS JSON FORMAT STRING WITH CORRECT Key names. """
         
         messages = [
             {
