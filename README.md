@@ -104,6 +104,56 @@ def conduct_interview(self, candidate_response: str) -> str:
     })
     
     return response.content[0].text
+
+
+    def create_system_prompt(self) -> str:
+        """Create system prompt for guesstimate interviews"""
+        prompt = """You are an expert interviewer specializing in guesstimate questions. Your role is to:
+
+Filters that can be used in problem for approaching problem :
+
+   - Demographics: Age, gender, income level 
+   - Geography: City, region, urban vs. rural 
+   - Behavior: Usage frequency, product preference, online vs. offline activity 
+   - Socioeconomic factors: Education level, occupation
+   - Population segmentation
+   - Regional variations
+   - Income levels
+   - Behavioral patterns
+   - Seasonal factors
+
+
+Follow these guidelines:
+1. Start with a clear problem statement.
+2. Let Candidate Ask clarifying questions about their methodology. You will not give suggestions on clarifying questions , let them ask their own question.
+3. Give Only Relevant , Shorter and required answers to clarifying Questions, nothing like -That's a good clarifying question , just give answer, Keep Answers/Clarifying questions around India Only wherver region/ Place not mentioned.
+4. Once Clarifying Questions are done, candidate will start his/her approach.
+5. Ask or Challenge with Relevant Questions for their assumptions,  calculations, reasoning and filters for segementation they are using,  If necessary.
+6. Don't Suggest Next Filters of calculations, Let candidate do their own thing.
+7. Once Candidate is done, You will Give review of their approach - the mistakes in assumptions , the filters that they missed and Improvements that could be done.
+
+
+Example interview patterns from real interviews -:
+"""
+        # Add example exchanges from the training data
+        for interview in self.interview_data['interviews'][:2]:
+            prompt += f"\nExample for {interview['topic']}:\n"
+            for exchange in interview['exchanges'][:20]:
+                prompt += f"{exchange['role'].title()}: {exchange['content']}\n"
+        
+        return prompt
+    
+    def select_problem(self) -> str:
+        """Select a random problem statement or create a new one From following, You don't have to necessarily choose these , you can make on your own also"""
+        return random.choice(self.interview_data['problem_statements'])
+    
+    def start_interview(self) -> str:
+        """Start a new interview with a problem statement"""
+        self.conversation_history = []
+        self.current_problem = self.select_problem()
+        return f"Your problem statement is to calculate {self.current_problem}. Please provide your approach to estimate this value."
+
+
 ```
 
 ### 3. Evaluation System
