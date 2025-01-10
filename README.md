@@ -296,5 +296,3 @@ json
 - Cost tracking parameters
 - System prompt customization
 - Interview data configuration
-
-[Rest of the README remains the same...]
