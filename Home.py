@@ -264,7 +264,7 @@ Example interview patterns from real interviews -:
             6. 'filters_missed': (they missed and needed to added in string)
             6. 'key_strengths': (Good poitns in the approach in string) 
             7. 'areas_for_improvement': (Areas in approach to improve in string)
-            Keep names of 'Key'  like 'structure', 'assumptions', etc..  in JSON as above only. Format as valid JSON string only. FORMAT AS VALID JSON ONLY. I am Saying this again: RETURN AS JSON FORMAT STRING. """
+            Return these in JSON format, Keep names of keys like 'structure', 'assumptions', 'segmentation', 'math','context'etc..  in JSON as above names  only. Format as valid JSON string only with above names of key only... FORMAT AS VALID JSON ONLY. I am Saying this again: RETURN AS JSON FORMAT STRING WITH CORRECT Key names. """
         
         messages = [
             {
@@ -659,6 +659,8 @@ def main():
         st.session_state.evaluation_done = False
     if 'chatbot' not in st.session_state:
         st.session_state.chatbot = None
+    if 'form_submitted' not in st.session_state:
+        st.session_state.form_submitted = False
     
     st.page_link("pages/How To Use.py", label="How To Use EstiMate", icon="🤖")
     
@@ -740,13 +742,17 @@ def main():
                             st.write_stream(response_generator(response))
 
                 st.rerun()
-        
-        # Display evaluation
+
         if st.session_state.evaluation_done:
             st.header("Interview Evaluation")
             
             try:
-                if st.session_state.evaluation_done and "form_submitted" not in st.session_state:
+                # Initialize submitted as False if not in session state
+                if 'submitted' not in st.session_state:
+                    st.session_state.submitted = False
+
+                # Show form if not yet submitted
+                if not st.session_state.form_submitted:
                     st.subheader("Please Fill Out the Feedback Form Before Viewing Your Results")
                     
                     with st.form(key="feedback_form"):
@@ -755,69 +761,59 @@ def main():
                         college_name = st.text_input(label="Name of College*")
                         year_of_passing = st.text_input(label="Year of Passing*")
                         knowledge_level = st.selectbox("What is your current level of knowledge?*", 
-                                                     ["Beginner", "Intermediate", "Advanced"], 
-                                                     index=None)
+                                                    ["Beginner", "Intermediate", "Advanced"], 
+                                                    index=None)
                         session_feedback = st.text_area(label="How did you feel about the session?*")
                         expected_score = st.slider("What score out of 10 do you expect in this interview?*", 
-                                                 0, 10, 5)
+                                                0, 10, 5)
                         overall_experience = st.text_area(label="How was your experience in the interview?*")
                         reuse = st.selectbox("Will you use future versions of this app?*", 
-                                           ["Yes", "No"], 
-                                           index=None)
+                                        ["Yes", "No"], 
+                                        index=None)
 
                         st.markdown("*Fields marked with * are required.*")
-                        submitted = st.form_submit_button(label="Submit Feedback")
-
-                if submitted:
-                    if not first_name or not college_name or not year_of_passing or not knowledge_level or \
-                       not session_feedback or not expected_score or not overall_experience or not reuse:
-                        st.warning("Please fill out all required fields.")
-                        st.stop()
-                    else:
-                        i = i + 1
-                        feedback_data = pd.DataFrame([{
-                            "Submission Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            "first_name": first_name,
-                            "last_name": last_name,
-                            "college_name": college_name,
-                            "year_of_passing": year_of_passing,
-                            "knowledge_level": knowledge_level,
-                            "session_feedback": session_feedback,
-                            "expected_score": expected_score,
-                            "overall_experience": overall_experience,
-                            "reuse": reuse,
-                        }], index=[i])
-
-                        updated_df = pd.concat([existing_data, feedback_data], ignore_index=True)
-                        conn.update(worksheet="data", data=updated_df)
-
-                        st.success("Thank you for your feedback! Your responses have been recorded. You can now download your interview transcript and view your results.")
+                        submit_button = st.form_submit_button(label="Submit Feedback")
                         
-                        feedback_data_json = {
-                            "Submission Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            "first_name": first_name,
-                            "last_name": last_name,
-                            "college_name": college_name,
-                            "year_of_passing": year_of_passing,
-                            "knowledge_level": knowledge_level,
-                            "session_feedback": session_feedback,
-                            "expected_score": expected_score,
-                            "overall_experience": overall_experience,
-                            "reuse": reuse
-                        }
+                        if submit_button:
+                            if not all([first_name, college_name, year_of_passing, knowledge_level, 
+                                    session_feedback, overall_experience, reuse]):
+                                st.warning("Please fill out all required fields.")
+                            else:
+                                feedback_data = pd.DataFrame([{
+                                    "Submission Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                    "first_name": first_name,
+                                    "last_name": last_name,
+                                    "college_name": college_name,
+                                    "year_of_passing": year_of_passing,
+                                    "knowledge_level": knowledge_level,
+                                    "session_feedback": session_feedback,
+                                    "expected_score": expected_score,
+                                    "overall_experience": overall_experience,
+                                    "reuse": reuse,
+                                }])
 
-                        feedback_file_path = os.path.join("feedback_data_json", 
-                                                        f"feedback_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}.json")
-                        os.makedirs("feedback_data_json", exist_ok=True)
-                        with open(feedback_file_path, "w") as feedback_file:
-                            json.dump(feedback_data_json, feedback_file, indent=4)
-                        
-                        st.session_state.form_submitted = True
+                                updated_df = pd.concat([existing_data, feedback_data], ignore_index=True)
+                                conn.update(worksheet="data", data=updated_df)
 
-                if st.session_state.evaluation_done and st.session_state.get("form_submitted"):
+                                # Save feedback as JSON
+                                feedback_data_json = feedback_data.to_dict('records')[0]
+                                feedback_file_path = os.path.join(
+                                    "feedback_data_json", 
+                                    f"feedback_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}.json"
+                                )
+                                os.makedirs("feedback_data_json", exist_ok=True)
+                                with open(feedback_file_path, "w") as feedback_file:
+                                    json.dump(feedback_data_json, feedback_file, indent=4)
+                                
+                                st.session_state.form_submitted = True
+                                st.success("Thank you for your feedback! Your responses have been recorded. You can now download your interview transcript and view your results.")
+                                st.rerun()
+
+                # Show results after form submission
+                if st.session_state.form_submitted:
                     st.header("Interview Evaluation Results")
                     eval_data = st.session_state.get("evaluation", {})
-
+                    
                     if not isinstance(eval_data, dict):
                         raise ValueError("Evaluation data is not in the expected format.")
 
@@ -838,15 +834,115 @@ def main():
                     st.write(eval_data.get("key_strengths", "No data available"))
                     st.write("**Areas for improvement**")
                     st.write(eval_data.get("areas_for_improvement", "No data available"))
-                else:
-                    st.write("Please submit the feedback form first to view your results.")
 
-            except KeyError as e:
-                st.error(f"Missing key in evaluation data: {e}")
-            except ValueError as e:
-                st.error(f"Invalid evaluation data: {e}")
             except Exception as e:
                 st.error(f"An unexpected error occurred: {e}")
+        # Display evaluation
+        # if st.session_state.evaluation_done:
+        #     st.header("Interview Evaluation")
+            
+        #     try:
+        #         if st.session_state.evaluation_done and "form_submitted" not in st.session_state:
+        #             st.subheader("Please Fill Out the Feedback Form Before Viewing Your Results")
+                    
+        #             with st.form(key="feedback_form"):
+        #                 first_name = st.text_input(label="First Name*")
+        #                 last_name = st.text_input(label="Last Name")
+        #                 college_name = st.text_input(label="Name of College*")
+        #                 year_of_passing = st.text_input(label="Year of Passing*")
+        #                 knowledge_level = st.selectbox("What is your current level of knowledge?*", 
+        #                                              ["Beginner", "Intermediate", "Advanced"], 
+        #                                              index=None)
+        #                 session_feedback = st.text_area(label="How did you feel about the session?*")
+        #                 expected_score = st.slider("What score out of 10 do you expect in this interview?*", 
+        #                                          0, 10, 5)
+        #                 overall_experience = st.text_area(label="How was your experience in the interview?*")
+        #                 reuse = st.selectbox("Will you use future versions of this app?*", 
+        #                                    ["Yes", "No"], 
+        #                                    index=None)
+
+        #                 st.markdown("*Fields marked with * are required.*")
+        #                 submitted = st.form_submit_button(label="Submit Feedback")
+
+        #         if submitted:
+        #             if not first_name or not college_name or not year_of_passing or not knowledge_level or \
+        #                not session_feedback or not expected_score or not overall_experience or not reuse:
+        #                 st.warning("Please fill out all required fields.")
+        #                 st.stop()
+        #             else:
+        #                 i = i + 1
+        #                 feedback_data = pd.DataFrame([{
+        #                     "Submission Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        #                     "first_name": first_name,
+        #                     "last_name": last_name,
+        #                     "college_name": college_name,
+        #                     "year_of_passing": year_of_passing,
+        #                     "knowledge_level": knowledge_level,
+        #                     "session_feedback": session_feedback,
+        #                     "expected_score": expected_score,
+        #                     "overall_experience": overall_experience,
+        #                     "reuse": reuse,
+        #                 }], index=[i])
+
+        #                 updated_df = pd.concat([existing_data, feedback_data], ignore_index=True)
+        #                 conn.update(worksheet="data", data=updated_df)
+
+        #                 st.success("Thank you for your feedback! Your responses have been recorded. You can now download your interview transcript and view your results.")
+                        
+        #                 feedback_data_json = {
+        #                     "Submission Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        #                     "first_name": first_name,
+        #                     "last_name": last_name,
+        #                     "college_name": college_name,
+        #                     "year_of_passing": year_of_passing,
+        #                     "knowledge_level": knowledge_level,
+        #                     "session_feedback": session_feedback,
+        #                     "expected_score": expected_score,
+        #                     "overall_experience": overall_experience,
+        #                     "reuse": reuse
+        #                 }
+
+        #                 feedback_file_path = os.path.join("feedback_data_json", 
+        #                                                 f"feedback_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}.json")
+        #                 os.makedirs("feedback_data_json", exist_ok=True)
+        #                 with open(feedback_file_path, "w") as feedback_file:
+        #                     json.dump(feedback_data_json, feedback_file, indent=4)
+                        
+        #                 st.session_state.form_submitted = True
+
+        #         if st.session_state.evaluation_done and st.session_state.get("form_submitted"):
+        #             st.header("Interview Evaluation Results")
+        #             eval_data = st.session_state.get("evaluation", {})
+
+        #             if not isinstance(eval_data, dict):
+        #                 raise ValueError("Evaluation data is not in the expected format.")
+
+        #             scores = {
+        #                 "Structure": eval_data.get("structure", 0) * 2,
+        #                 "Assumptions": eval_data.get("assumptions", 0) * 2,
+        #                 "Segmentation": eval_data.get("segmentation", 0) * 2,
+        #                 "Math": eval_data.get("math", 0) * 2,
+        #                 "Context": eval_data.get("context", 0) * 2,
+        #             }
+
+        #             st.plotly_chart(create_score_bar_graph(scores), use_container_width=True)
+
+        #             st.subheader("Detailed Feedback")
+        #             st.write("**Missed Filters:**")
+        #             st.write(eval_data.get("filters_missed", "No data available"))
+        #             st.write("**Key Strengths:**")
+        #             st.write(eval_data.get("key_strengths", "No data available"))
+        #             st.write("**Areas for improvement**")
+        #             st.write(eval_data.get("areas_for_improvement", "No data available"))
+        #         else:
+        #             st.write("Please submit the feedback form first to view your results.")
+
+        #     except KeyError as e:
+        #         st.error(f"Missing key in evaluation data: {e}")
+        #     except ValueError as e:
+        #         st.error(f"Invalid evaluation data: {e}")
+        #     except Exception as e:
+        #         st.error(f"An unexpected error occurred: {e}")
 
         if st.session_state.evaluation_done:
             file_name = download_interview_transcript(st.session_state.messages, st.session_state.evaluation)
